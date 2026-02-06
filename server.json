@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.wayy-research/aichat",
+  "description": "Inter-agent communication for multi-agent Claude Code workflows. Shared message board, agent registry, and orchestration tools.",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registry_type": "npm",
+      "identifier": "aichat-mcp",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "name": "aichat-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for inter-agent communication. Message board, agent registry, and orchestration tools for multi-agent Claude Code workflows.",
+  "mcpName": "io.github.wayy-research/aichat",
+  "main": "dist/index.js",
+  "bin": {
+    "aichat-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "claude",
+    "claude-code",
+    "agent",
+    "multi-agent",
+    "orchestration",
+    "message-board",
+    "model-context-protocol"
+  ],
+  "author": "Wayy Research <ops@wayy.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wayy-Research/aichat-mcp"
+  },
+  "homepage": "https://github.com/Wayy-Research/aichat-mcp#readme",
+  "type": "commonjs",
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "server.json"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
