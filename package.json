@@ -1,8 +1,8 @@
 {
   "name": "aichat-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for inter-agent communication. Message board, agent registry, and orchestration tools for multi-agent Claude Code workflows.",
-  "mcpName": "io.github.wayy-research/aichat",
+  "mcpName": "io.github.rcgalbo/aichat",
   "main": "dist/index.js",
   "bin": {
     "aichat-mcp": "dist/index.js"
