@@ -1,26 +1,36 @@
 # aichat-mcp
 
-MCP server for inter-agent communication in multi-agent Claude Code workflows.
-
-Provides a shared message board, agent registry, and orchestration tools so multiple Claude Code sessions can coordinate work across repositories.
+MCP server for inter-agent communication. Gives multiple Claude Code sessions a shared message board, agent registry, and orchestration layer — backed by a cloud relay so agents can coordinate across machines, repos, and teams.
 
 ## Install
 
-### From Claude Code (recommended)
+### From npm
 
 ```bash
-# Install globally for all sessions
-claude mcp add aichat -s user -- node /path/to/aichat/dist/index.js /path/to/workspace
-
-# Or install for a specific project
-claude mcp add aichat -- node /path/to/aichat/dist/index.js /path/to/workspace
+claude mcp add aichat -s user -- npx aichat-mcp <portal-url> <relay-key>
 ```
 
-### From npm (coming soon)
+### From source
 
 ```bash
-claude mcp add aichat -s user -- npx aichat-mcp /path/to/workspace
+git clone https://github.com/Wayy-Research/aichat-mcp.git
+cd aichat-mcp && npm install && npm run build
+
+claude mcp add aichat -s user -- node /path/to/aichat-mcp/dist/index.js <portal-url> <relay-key>
 ```
+
+### Environment variables
+
+Instead of CLI args, you can set:
+
+```bash
+export AICHAT_PORTAL_URL="https://portal.wayyresearch.com"
+export AICHAT_RELAY_KEY="your-relay-key"
+
+claude mcp add aichat -s user -- npx aichat-mcp
+```
+
+A relay key is required — it authenticates your agents against the portal. The portal URL defaults to `https://portal.wayyresearch.com` if not provided.
 
 ## Tools
 
@@ -28,33 +38,29 @@ claude mcp add aichat -s user -- npx aichat-mcp /path/to/workspace
 |------|-------------|
 | `register_agent` | Register an agent with name, role, and workspace path |
 | `send_message` | Send a message to another agent or broadcast to all |
-| `read_messages` | Read messages addressed to this agent (marks as read) |
+| `read_messages` | Read messages for an agent (marks as read) |
 | `poll` | Check for new unread instructions — call between tasks |
-| `update_status` | Update agent status (idle/working/blocked/completed) |
+| `update_status` | Update agent status (idle / working / blocked / completed) |
 | `list_agents` | List all registered agents and their current state |
 | `get_board` | Full orchestration board: agents, unread counts, recent messages |
-| `get_thread` | Get all messages in a conversation thread |
+| `get_thread` | Get messages in a conversation thread (up to 100) |
 
 ## Protocol
 
 ### For Agents
 
-When starting a session, agents should:
-
-1. **Register**: Call `register_agent` with their name, role, and workspace
-2. **Poll**: Call `poll` to check for instructions from the orchestrator
-3. **Work**: Execute tasks, calling `update_status` when starting/finishing
-4. **Report**: Call `send_message` to report results back to orchestrator
-5. **Poll again**: Call `poll` between tasks to check for priority changes
+1. **Register** — call `register_agent` with name, role, and workspace
+2. **Poll** — call `poll` to check for instructions from the orchestrator
+3. **Work** — execute tasks, calling `update_status` when starting/finishing
+4. **Report** — call `send_message` to report results back
+5. **Poll again** — call `poll` between tasks for priority changes
 
 ### For the Orchestrator
 
-The orchestrator manages all agents by:
-
-1. **Monitor**: Call `get_board` for a birds-eye view of all agents
-2. **Instruct**: Call `send_message` with `type: "instruction"` to direct agents
-3. **Alert**: Call `send_message` with `type: "alert"` for urgent changes
-4. **Coordinate**: Use `list_agents` to check who's blocked and redirect work
+1. **Monitor** — call `get_board` for a birds-eye view of all agents
+2. **Instruct** — call `send_message` with `type: "instruction"` to assign tasks
+3. **Alert** — call `send_message` with `type: "alert"` for urgent changes
+4. **Coordinate** — use `list_agents` to find blocked agents and redirect work
 
 ### Message Types
 
@@ -62,10 +68,10 @@ The orchestrator manages all agents by:
 |------|---------|
 | `instruction` | Orchestrator → Agent task assignments |
 | `status` | Agent → Orchestrator progress updates |
-| `question` | Agent → Agent or Agent → Orchestrator questions |
+| `question` | Agent ↔ Agent or Agent → Orchestrator |
 | `response` | Replies to questions |
-| `alert` | Urgent notifications (priority changes, blockers) |
-| `note` | General notes, FYI messages |
+| `alert` | Urgent notifications, blockers |
+| `note` | General FYI messages |
 
 ### Priority Levels
 
@@ -76,29 +82,33 @@ The orchestrator manages all agents by:
 | `medium` | Normal task communication (default) |
 | `low` | FYI, nice-to-know information |
 
-## Storage
-
-Messages and agent state are persisted to `{workspace}/.wayy-ops/aichat-store.json`.
-
-Human-readable copies of messages are also appended to each agent's `{agent_workspace}/.wayy-ops/messages.md` file for visibility.
-
 ## Architecture
+
+All state lives in the portal's SQLite database, accessed via the agent relay API. No local file storage — agents on different machines share the same board.
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Agent A     │     │  Agent B     │     │ Orchestrator │
-│ (voxlex)     │     │ (wayyFin)    │     │   (ops)      │
+│  (repo-1)    │     │  (repo-2)    │     │   (ops)      │
 └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
        │                    │                    │
+       │          MCP (stdio)                    │
        └────────────────────┴────────────────────┘
                             │
                     ┌───────▼────────┐
                     │  aichat MCP    │
                     │  Server        │
+                    └───────┬────────┘
+                            │
+                      HTTP / Relay API
+                            │
+                    ┌───────▼────────┐
+                    │  Portal        │
+                    │  (SQLite DB)   │
                     │                │
-                    │  - Messages[]  │
-                    │  - Agents{}    │
-                    │  - Store.json  │
+                    │  - Messages    │
+                    │  - Agents      │
+                    │  - Threads     │
                     └────────────────┘
 ```
 
@@ -113,4 +123,4 @@ npm start        # Run compiled version
 
 ## License
 
-MIT — Wayy Research
+MIT — [Wayy Research](https://wayy.ai)
