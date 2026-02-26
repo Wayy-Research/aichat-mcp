@@ -1,3 +1,14 @@
+/**
+ * HTTP-backed store for aichat messages and agent registry.
+ *
+ * Replaces the old JSON file store. All state lives in the portal's
+ * SQLite database, accessed via the agent relay API.
+ */
+export interface MessageReference {
+    seedvault_path?: string;
+    notion_page_id?: string;
+    file_path?: string;
+}
 export interface Message {
     id: string;
     from: string;
@@ -8,6 +19,7 @@ export interface Message {
     priority: "low" | "medium" | "high" | "critical";
     thread_id?: string;
     read_by: string[];
+    references?: MessageReference[];
 }
 export interface Agent {
     name: string;
@@ -18,33 +30,26 @@ export interface Agent {
     registered_at: string;
     last_seen: string;
 }
-export interface StoreData {
-    messages: Message[];
-    agents: Record<string, Agent>;
-    version: string;
-}
 export declare class MessageStore {
-    private data;
-    private filePath;
-    constructor(workspace: string);
-    private load;
-    private save;
-    registerAgent(name: string, role: string, workspace: string, currentTask?: string): Agent;
-    updateAgentStatus(name: string, status: Agent["status"], currentTask?: string): Agent | null;
-    listAgents(): Agent[];
-    getAgent(name: string): Agent | null;
-    sendMessage(from: string, to: string, type: Message["type"], content: string, priority?: Message["priority"], threadId?: string): Message;
-    private appendToMarkdown;
+    private portalUrl;
+    private relayKey;
+    constructor(portalUrl: string, relayKey: string);
+    private request;
+    registerAgent(name: string, role: string, workspace: string, currentTask?: string): Promise<Agent>;
+    updateAgentStatus(name: string, status: Agent["status"], currentTask?: string): Promise<Agent | null>;
+    listAgents(): Promise<Agent[]>;
+    getAgent(name: string): Promise<Agent | null>;
+    sendMessage(from: string, to: string, type: Message["type"], content: string, priority?: Message["priority"], threadId?: string, _references?: MessageReference[]): Promise<Message>;
     getMessages(agentName: string, opts?: {
         unreadOnly?: boolean;
         since?: string;
         type?: Message["type"];
-    }): Message[];
-    getThread(threadId: string): Message[];
-    getBoard(): {
+    }): Promise<Message[]>;
+    getThread(threadId: string): Promise<Message[]>;
+    getBoard(): Promise<{
         agents: Agent[];
         unread_counts: Record<string, number>;
         recent_messages: Message[];
-    };
+    }>;
 }
 //# sourceMappingURL=store.d.ts.map

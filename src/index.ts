@@ -5,17 +5,29 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { MessageStore } from "./store.js";
 
-// Resolve workspace from CLI args or env
-const workspace =
+// Resolve portal URL and relay key from CLI args or env
+const portalUrl =
   process.argv[2] ||
-  process.env.AICHAT_WORKSPACE ||
-  process.cwd();
+  process.env.AICHAT_PORTAL_URL ||
+  "https://portal.wayyresearch.com";
 
-const store = new MessageStore(workspace);
+const relayKey =
+  process.argv[3] ||
+  process.env.AICHAT_RELAY_KEY ||
+  "";
+
+if (!relayKey) {
+  console.error(
+    "aichat MCP: relay key required. Set AICHAT_RELAY_KEY env var or pass as second CLI arg."
+  );
+  process.exit(1);
+}
+
+const store = new MessageStore(portalUrl, relayKey);
 
 const server = new McpServer({
   name: "aichat",
-  version: "1.0.0",
+  version: "2.0.0",
 });
 
 // --- Tool: register_agent ---
@@ -23,13 +35,13 @@ server.tool(
   "register_agent",
   "Register this agent with the message board. Call this first when starting a session.",
   {
-    name: z.string().describe("Agent name (e.g. 'voxlex-agent', 'wayydb-agent', 'ops')"),
+    name: z.string().describe("Agent name (e.g. 'crux', 'devops', 'rick')"),
     role: z.string().describe("Agent role (e.g. 'backend-engineer', 'orchestrator', 'devops')"),
     workspace: z.string().describe("Absolute path to the agent's working repository"),
     current_task: z.string().optional().describe("What the agent is currently working on"),
   },
-  async ({ name, role, workspace: ws, current_task }) => {
-    const agent = store.registerAgent(name, role, ws, current_task || "");
+  async ({ name, role, workspace, current_task }) => {
+    const agent = await store.registerAgent(name, role, workspace, current_task || "");
     return {
       content: [
         {
@@ -44,7 +56,7 @@ server.tool(
 // --- Tool: send_message ---
 server.tool(
   "send_message",
-  "Send a message to another agent or broadcast to all agents. Messages are persisted and also appended to the recipient's .wayy-ops/messages.md file.",
+  "Send a message to another agent or broadcast to all agents. Messages are persisted in the shared portal database.",
   {
     from: z.string().describe("Sender agent name"),
     to: z.string().describe("Recipient agent name, or 'all' for broadcast"),
@@ -59,7 +71,7 @@ server.tool(
     thread_id: z.string().optional().describe("Thread ID for threaded conversations"),
   },
   async ({ from, to, type, content, priority, thread_id }) => {
-    const msg = store.sendMessage(
+    const msg = await store.sendMessage(
       from,
       to,
       type,
@@ -98,7 +110,7 @@ server.tool(
       .describe("Filter by message type"),
   },
   async ({ agent_name, unread_only, since, type }) => {
-    const msgs = store.getMessages(agent_name, {
+    const msgs = await store.getMessages(agent_name, {
       unreadOnly: unread_only,
       since,
       type,
@@ -136,13 +148,13 @@ server.tool(
 // --- Tool: poll ---
 server.tool(
   "poll",
-  "Check for new instructions or messages from the orchestrator. Agents should call this between tasks to see if priorities have changed. Returns unread messages addressed to this agent.",
+  "Check for new instructions or messages. Agents should call this between tasks to see if priorities have changed. Returns unread messages addressed to this agent.",
   {
     agent_name: z.string().describe("The polling agent's name"),
   },
   async ({ agent_name }) => {
-    const msgs = store.getMessages(agent_name, { unreadOnly: true });
-    const agent = store.getAgent(agent_name);
+    const msgs = await store.getMessages(agent_name, { unreadOnly: true });
+    const agent = await store.getAgent(agent_name);
 
     if (msgs.length === 0) {
       return {
@@ -206,7 +218,7 @@ server.tool(
       .describe("Description of current task"),
   },
   async ({ agent_name, status, current_task }) => {
-    const agent = store.updateAgentStatus(agent_name, status, current_task);
+    const agent = await store.updateAgentStatus(agent_name, status, current_task);
     if (!agent) {
       return {
         content: [
@@ -234,7 +246,7 @@ server.tool(
   "List all registered agents with their current status, role, and last seen time.",
   {},
   async () => {
-    const agents = store.listAgents();
+    const agents = await store.listAgents();
     if (agents.length === 0) {
       return {
         content: [
@@ -265,7 +277,7 @@ server.tool(
   "Get the full orchestration board: all agents, their statuses, unread message counts, and recent messages. Use this for a birds-eye view.",
   {},
   async () => {
-    const board = store.getBoard();
+    const board = await store.getBoard();
 
     let text = "# Orchestration Board\n\n";
 
@@ -298,7 +310,7 @@ server.tool(
     thread_id: z.string().describe("The thread ID to retrieve"),
   },
   async ({ thread_id }) => {
-    const msgs = store.getThread(thread_id);
+    const msgs = await store.getThread(thread_id);
     if (msgs.length === 0) {
       return {
         content: [

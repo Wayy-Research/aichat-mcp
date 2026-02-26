@@ -1,19 +1,29 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as crypto from "crypto";
+/**
+ * HTTP-backed store for aichat messages and agent registry.
+ *
+ * Replaces the old JSON file store. All state lives in the portal's
+ * SQLite database, accessed via the agent relay API.
+ */
 
 // --- Types ---
+
+export interface MessageReference {
+  seedvault_path?: string;
+  notion_page_id?: string;
+  file_path?: string;
+}
 
 export interface Message {
   id: string;
   from: string;
-  to: string; // agent name or "all" for broadcast
+  to: string;
   type: "instruction" | "status" | "question" | "response" | "alert" | "note";
   content: string;
   timestamp: string;
   priority: "low" | "medium" | "high" | "critical";
   thread_id?: string;
   read_by: string[];
+  references?: MessageReference[];
 }
 
 export interface Agent {
@@ -26,101 +36,146 @@ export interface Agent {
   last_seen: string;
 }
 
-export interface StoreData {
-  messages: Message[];
-  agents: Record<string, Agent>;
-  version: string;
-}
-
-// --- Store ---
+// --- HTTP Client Store ---
 
 export class MessageStore {
-  private data: StoreData;
-  private filePath: string;
+  private portalUrl: string;
+  private relayKey: string;
 
-  constructor(workspace: string) {
-    const dir = path.join(workspace, ".wayy-ops");
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    this.filePath = path.join(dir, "aichat-store.json");
-    this.data = this.load();
+  constructor(portalUrl: string, relayKey: string) {
+    // Strip trailing slash
+    this.portalUrl = portalUrl.replace(/\/+$/, "");
+    this.relayKey = relayKey;
   }
 
-  private load(): StoreData {
-    if (fs.existsSync(this.filePath)) {
-      const raw = fs.readFileSync(this.filePath, "utf-8");
-      return JSON.parse(raw) as StoreData;
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: Record<string, unknown>,
+    params?: Record<string, string>
+  ): Promise<T> {
+    const url = new URL(`${this.portalUrl}/api/agents/relay${path}`);
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== null && v !== "") {
+          url.searchParams.set(k, v);
+        }
+      }
     }
-    return { messages: [], agents: {}, version: "1.0.0" };
-  }
 
-  private save(): void {
-    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), "utf-8");
+    const headers: Record<string, string> = {
+      "x-agent-key": this.relayKey,
+    };
+
+    const init: RequestInit = { method, headers };
+
+    if (body && (method === "POST" || method === "PUT" || method === "PATCH")) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+
+    const resp = await fetch(url.toString(), init);
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`Relay API ${method} ${path} returned ${resp.status}: ${text}`);
+    }
+    return resp.json() as Promise<T>;
   }
 
   // --- Agent Registry ---
 
-  registerAgent(
+  async registerAgent(
     name: string,
     role: string,
     workspace: string,
     currentTask: string = ""
-  ): Agent {
-    const now = new Date().toISOString();
-    const agent: Agent = {
+  ): Promise<Agent> {
+    const data = await this.request<Record<string, string>>("POST", "/register", {
       name,
       role,
       workspace,
-      status: "idle",
       current_task: currentTask,
-      registered_at: this.data.agents[name]?.registered_at || now,
-      last_seen: now,
+    });
+    return {
+      name: data.name,
+      role: data.role,
+      workspace: data.workspace || "",
+      status: (data.status as Agent["status"]) || "idle",
+      current_task: data.current_task || "",
+      registered_at: data.last_seen,
+      last_seen: data.last_seen,
     };
-    this.data.agents[name] = agent;
-    this.save();
-    return agent;
   }
 
-  updateAgentStatus(
+  async updateAgentStatus(
     name: string,
     status: Agent["status"],
     currentTask?: string
-  ): Agent | null {
-    const agent = this.data.agents[name];
-    if (!agent) return null;
-    agent.status = status;
-    agent.last_seen = new Date().toISOString();
-    if (currentTask !== undefined) agent.current_task = currentTask;
-    this.save();
-    return agent;
+  ): Promise<Agent | null> {
+    try {
+      await this.request<Record<string, string>>("POST", "/status", {
+        agent_name: name,
+        status,
+        ...(currentTask !== undefined ? { current_task: currentTask } : {}),
+      });
+      // Return a synthetic agent object (status endpoint doesn't return full agent)
+      return {
+        name,
+        role: "",
+        workspace: "",
+        status,
+        current_task: currentTask || "",
+        registered_at: "",
+        last_seen: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
   }
 
-  listAgents(): Agent[] {
-    return Object.values(this.data.agents);
+  async listAgents(): Promise<Agent[]> {
+    const data = await this.request<Array<Record<string, string>>>("GET", "/agents");
+    return data.map((a) => ({
+      name: a.name,
+      role: a.role || "",
+      workspace: a.workspace || "",
+      status: (mapPresenceStatus(a.status) as Agent["status"]) || "idle",
+      current_task: a.current_task || "",
+      registered_at: a.last_seen || "",
+      last_seen: a.last_seen || "",
+    }));
   }
 
-  getAgent(name: string): Agent | null {
-    return this.data.agents[name] || null;
+  async getAgent(name: string): Promise<Agent | null> {
+    const agents = await this.listAgents();
+    return agents.find((a) => a.name === name) || null;
   }
 
   // --- Messages ---
 
-  sendMessage(
+  async sendMessage(
     from: string,
     to: string,
     type: Message["type"],
     content: string,
     priority: Message["priority"] = "medium",
-    threadId?: string
-  ): Message {
-    // Touch sender's last_seen
-    if (this.data.agents[from]) {
-      this.data.agents[from].last_seen = new Date().toISOString();
-    }
-
-    const msg: Message = {
-      id: crypto.randomUUID(),
+    threadId?: string,
+    _references?: MessageReference[]
+  ): Promise<Message> {
+    const data = await this.request<{ status: string; id: string }>(
+      "POST",
+      "/message",
+      {
+        from_agent: from,
+        to,
+        content,
+        message_type: type,
+        priority,
+        ...(threadId ? { thread_id: threadId } : {}),
+      }
+    );
+    return {
+      id: data.id,
       from,
       to,
       type,
@@ -130,95 +185,104 @@ export class MessageStore {
       thread_id: threadId,
       read_by: [],
     };
-    this.data.messages.push(msg);
-    this.save();
-
-    // Also append to human-readable messages.md in recipient's workspace
-    this.appendToMarkdown(msg);
-
-    return msg;
   }
 
-  private appendToMarkdown(msg: Message): void {
-    // Find recipient workspace
-    const recipient = this.data.agents[msg.to];
-    if (recipient) {
-      const mdPath = path.join(recipient.workspace, ".wayy-ops", "messages.md");
-      if (fs.existsSync(mdPath)) {
-        const entry = `\n### [${msg.from} → ${msg.to}] ${msg.timestamp}\nPriority: ${msg.priority} | Type: ${msg.type}\n${msg.content}\n---\n`;
-        fs.appendFileSync(mdPath, entry, "utf-8");
-      }
-    }
-    // Broadcast: append to all agent workspaces
-    if (msg.to === "all") {
-      for (const agent of Object.values(this.data.agents)) {
-        const mdPath = path.join(agent.workspace, ".wayy-ops", "messages.md");
-        if (fs.existsSync(mdPath)) {
-          const entry = `\n### [${msg.from} → all] ${msg.timestamp}\nPriority: ${msg.priority} | Type: ${msg.type}\n${msg.content}\n---\n`;
-          fs.appendFileSync(mdPath, entry, "utf-8");
-        }
-      }
-    }
-  }
-
-  getMessages(
+  async getMessages(
     agentName: string,
-    opts?: { unreadOnly?: boolean; since?: string; type?: Message["type"] }
-  ): Message[] {
-    // Touch agent's last_seen
-    if (this.data.agents[agentName]) {
-      this.data.agents[agentName].last_seen = new Date().toISOString();
+    opts?: {
+      unreadOnly?: boolean;
+      since?: string;
+      type?: Message["type"];
     }
+  ): Promise<Message[]> {
+    const params: Record<string, string> = {
+      agent: agentName,
+      include_sent: "true",
+      mark_read: "true",
+    };
+    if (opts?.unreadOnly) params.unread_only = "true";
+    if (opts?.since) params.since = opts.since;
+    if (opts?.type) params.msg_type = opts.type;
 
-    let msgs = this.data.messages.filter(
-      (m) => m.to === agentName || m.to === "all" || m.from === agentName
+    const data = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      "/messages",
+      undefined,
+      params
     );
 
-    if (opts?.unreadOnly) {
-      msgs = msgs.filter((m) => !m.read_by.includes(agentName));
-    }
-    if (opts?.since) {
-      msgs = msgs.filter((m) => m.timestamp > opts.since!);
-    }
-    if (opts?.type) {
-      msgs = msgs.filter((m) => m.type === opts.type);
-    }
-
-    // Mark as read
-    for (const m of msgs) {
-      if (!m.read_by.includes(agentName)) {
-        m.read_by.push(agentName);
-      }
-    }
-    this.save();
-
-    return msgs;
+    return data.map(apiMsgToMessage);
   }
 
-  getThread(threadId: string): Message[] {
-    return this.data.messages.filter((m) => m.thread_id === threadId);
+  async getThread(threadId: string): Promise<Message[]> {
+    const data = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      "/messages",
+      undefined,
+      { thread_id: threadId, limit: "100" }
+    );
+    return data.map(apiMsgToMessage);
   }
 
   // --- Board ---
 
-  getBoard(): {
+  async getBoard(): Promise<{
     agents: Agent[];
     unread_counts: Record<string, number>;
     recent_messages: Message[];
-  } {
-    const agents = this.listAgents();
-    const unread: Record<string, number> = {};
+  }> {
+    const data = await this.request<{
+      agents: Array<Record<string, string>>;
+      unread_counts: Record<string, number>;
+      recent_messages: Array<Record<string, unknown>>;
+    }>("GET", "/board");
 
-    for (const agent of agents) {
-      unread[agent.name] = this.data.messages.filter(
-        (m) =>
-          (m.to === agent.name || m.to === "all") &&
-          !m.read_by.includes(agent.name)
-      ).length;
-    }
-
-    const recent = this.data.messages.slice(-20);
-
-    return { agents, unread_counts: unread, recent_messages: recent };
+    return {
+      agents: data.agents.map((a) => ({
+        name: a.name,
+        role: a.role || "",
+        workspace: a.workspace || "",
+        status: (mapPresenceStatus(a.status) as Agent["status"]) || "idle",
+        current_task: a.current_task || "",
+        registered_at: a.last_seen || "",
+        last_seen: a.last_seen || "",
+      })),
+      unread_counts: data.unread_counts,
+      recent_messages: data.recent_messages.map(apiMsgToMessage),
+    };
   }
+}
+
+// --- Helpers ---
+
+/** Map portal agent_presence status to MCP agent status. */
+function mapPresenceStatus(
+  s: string
+): "idle" | "working" | "blocked" | "completed" {
+  switch (s) {
+    case "working":
+      return "working";
+    case "error":
+      return "blocked";
+    case "offline":
+      return "idle";
+    case "available":
+    default:
+      return "idle";
+  }
+}
+
+/** Convert a relay API message dict to our Message interface. */
+function apiMsgToMessage(r: Record<string, unknown>): Message {
+  return {
+    id: (r.id as string) || "",
+    from: (r.from as string) || "",
+    to: (r.to as string) || "",
+    type: (r.type as Message["type"]) || "note",
+    content: (r.content as string) || "",
+    timestamp: (r.timestamp as string) || "",
+    priority: (r.priority as Message["priority"]) || "medium",
+    thread_id: (r.thread_id as string) || undefined,
+    read_by: (r.read_by as string[]) || [],
+  };
 }
